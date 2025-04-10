@@ -12,17 +12,18 @@ use libduckdb_sys as ffi;
 use std::{
     error::Error,
     ffi::CString,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicUsize, Ordering},
 };
 
 #[repr(C)]
 struct HelloBindData {
     name: String,
+    repeat_count: usize
 }
 
 #[repr(C)]
 struct HelloInitData {
-    done: AtomicBool,
+    done: AtomicUsize,
 }
 
 struct HelloVTab;
@@ -34,31 +35,46 @@ impl VTab for HelloVTab {
     fn bind(bind: &BindInfo) -> Result<Self::BindData, Box<dyn std::error::Error>> {
         bind.add_result_column("column0", LogicalTypeHandle::from(LogicalTypeId::Varchar));
         let name = bind.get_parameter(0).to_string();
-        Ok(HelloBindData { name })
+        let repeat_count = bind.get_parameter(1).to_int64() as usize;
+        Ok(HelloBindData { name, repeat_count })
     }
 
     fn init(_: &InitInfo) -> Result<Self::InitData, Box<dyn std::error::Error>> {
         Ok(HelloInitData {
-            done: AtomicBool::new(false),
+            done: AtomicUsize::new(0),
         })
     }
 
     fn func(func: &TableFunctionInfo<Self>, output: &mut DataChunkHandle) -> Result<(), Box<dyn std::error::Error>> {
         let init_data = func.get_init_data();
         let bind_data = func.get_bind_data();
-        if init_data.done.swap(true, Ordering::Relaxed) {
+
+        let current_row = init_data.done.load(Ordering::Relaxed);
+        let repeat_count = bind_data.repeat_count;
+
+        if current_row >= repeat_count {
             output.set_len(0);
         } else {
+            let rows_to_produce = std::cmp::min(1024,repeat_count - current_row);
             let vector = output.flat_vector(0);
-            let result = CString::new(format!("Rusty Quack {} 🐥", bind_data.name))?;
-            vector.insert(0, result);
-            output.set_len(1);
+
+            for i in 0..rows_to_produce {
+                let row_value = CString::new(format!("Rusty Quack {} 🐥", bind_data.name))?;
+                vector.insert(i, row_value);
+            }
+            init_data
+                .done
+                .fetch_add(rows_to_produce, Ordering::Relaxed);
+            output.set_len(rows_to_produce);
         }
         Ok(())
     }
 
     fn parameters() -> Option<Vec<LogicalTypeHandle>> {
-        Some(vec![LogicalTypeHandle::from(LogicalTypeId::Varchar)])
+        Some(vec![
+            LogicalTypeHandle::from(LogicalTypeId::Varchar),
+            LogicalTypeHandle::from(LogicalTypeId::Integer),
+        ])
     }
 }
 
