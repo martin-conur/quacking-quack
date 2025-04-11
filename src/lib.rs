@@ -3,86 +3,81 @@ extern crate duckdb_loadable_macros;
 extern crate libduckdb_sys;
 
 use duckdb::{
-    arrow::row, core::{DataChunkHandle, Inserter, LogicalTypeHandle, LogicalTypeId}, vtab::{BindInfo, InitInfo, TableFunctionInfo, VTab}, Connection, Result
+    core::{DataChunkHandle, LogicalTypeId},
+    vscalar::{ScalarFunctionSignature, VScalar},
+    vtab::arrow::WritableVector,
+    Connection, Result,
 };
 use duckdb_loadable_macros::duckdb_entrypoint_c_api;
-use libduckdb_sys as ffi;
-use std::{
-    error::Error,
-    ffi::CString,
-    sync::atomic::{AtomicUsize, Ordering},
+use std::error::Error;
+use libduckdb_sys::{
+    duckdb_string_t,
+    duckdb_string_t_data,
+    duckdb_string_t_length,
 };
+use duckdb::core::Inserter;
+use duckdb::ffi;
 
-#[repr(C)]
-struct HelloBindData {
-    regressive_count: usize
-}
+use rust_stemmers::{Algorithm, Stemmer};
+struct StemFunc;
 
-#[repr(C)]
-struct HelloInitData {
-    done: AtomicUsize,
-}
+impl VScalar for StemFunc {
+    type State = ();
 
-struct HelloVTab;
+    unsafe fn invoke(
+        _state: &Self::State,
+        input: &mut DataChunkHandle,
+        output: &mut dyn WritableVector,
+    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+        // Extract the input word
+        let input_vec = input.flat_vector(0);
+        // slice of strings
+        let input_slice = input_vec.as_slice_with_len::<duckdb_string_t>(input.len());
+        // a flat writable vector
+        let output_flat = output.flat_vector();
 
-impl VTab for HelloVTab {
-    type InitData = HelloInitData;
-    type BindData = HelloBindData;
+        // stemmer algorithm
+        let stemmer = Stemmer::create(Algorithm::English);
 
-    fn bind(bind: &BindInfo) -> Result<Self::BindData, Box<dyn std::error::Error>> {
-        bind.add_result_column("mr-cuack", LogicalTypeHandle::from(LogicalTypeId::Varchar));
-        let regressive_count = bind.get_parameter(0).to_int64() as usize;
-        Ok(HelloBindData { regressive_count })
-    }
+        // stem all the words in the input slice
+        // map the input slice to a vector of stemmed words
+        let stemmed_words: Vec<String> = input_slice
+            .iter()
+            .map(|word| {
+                let len = duckdb_string_t_length(*word);
+                let c_ptr = duckdb_string_t_data(word as *const _ as *mut _);
+                let string = String::from_utf8_lossy(std::slice::from_raw_parts(
+                    c_ptr as *const u8,
+                    len as usize,
+                ));
+                stem_word(string.as_ref(), &stemmer)
+            })
+            .collect::<Vec<String>>();
 
-    fn init(_: &InitInfo) -> Result<Self::InitData, Box<dyn std::error::Error>> {
-        Ok(HelloInitData {
-            done: AtomicUsize::new(0),
-        })
-    }
-
-    fn func(func: &TableFunctionInfo<Self>, output: &mut DataChunkHandle) -> Result<(), Box<dyn std::error::Error>> {
-        let init_data = func.get_init_data();
-        let bind_data = func.get_bind_data();
-
-        let current_row = init_data.done.load(Ordering::Relaxed);
-        let regressive_count = bind_data.regressive_count;
-
-        if current_row >= regressive_count {
-            output.set_len(0);
-        } else {
-            let rows_to_produce = std::cmp::min(1024,regressive_count - current_row);
-            let vector = output.flat_vector(0);
-
-            for i in 0..rows_to_produce {
-                let row_value = match i {
-                    too_early if too_early < rows_to_produce - 2 => CString::new(format!("Not yet ... 🥚"))?,
-                    almost if almost == rows_to_produce - 2 => CString::new(format!("Almost ... 🥚✨"))?,
-                    _ => CString::new(format!("Quack Quack 🐥"))?,
-                };
-
-                vector.insert(i, row_value);
-            }
-            init_data
-                .done
-                .fetch_add(rows_to_produce, Ordering::Relaxed);
-            output.set_len(rows_to_produce);
+        for (i, stemmed_word) in stemmed_words.iter().enumerate() {
+            output_flat.insert(i, stemmed_word.as_str())
         }
+
         Ok(())
     }
 
-    fn parameters() -> Option<Vec<LogicalTypeHandle>> {
-        Some(vec![
-            LogicalTypeHandle::from(LogicalTypeId::Integer),
-        ])
+    fn signatures() -> Vec<ScalarFunctionSignature> {
+        vec![ScalarFunctionSignature::exact(
+            vec![LogicalTypeId::Varchar.into()],
+            LogicalTypeId::Varchar.into(),
+        )]
     }
 }
 
-const EXTENSION_NAME: &str = env!("CARGO_PKG_NAME");
+fn stem_word(word: &str, stemmer: &Stemmer) -> String {
+    stemmer.stem(word).to_string()
+}
 
-#[duckdb_entrypoint_c_api()]
+const FUNCTION_NAME: &str = "quacking_quack";
+
+#[duckdb_entrypoint_c_api]
 pub unsafe fn extension_entrypoint(con: Connection) -> Result<(), Box<dyn Error>> {
-    con.register_table_function::<HelloVTab>(EXTENSION_NAME)
-        .expect("Failed to register hello table function");
+    con.register_scalar_function::<StemFunc>(FUNCTION_NAME)
+        .expect("Failed to register quacking_quack()");
     Ok(())
 }

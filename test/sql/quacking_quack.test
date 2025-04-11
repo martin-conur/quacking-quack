@@ -1,0 +1,20 @@
+# name: test/sql/quacking_quack.test
+# description: test quacking_quack extension
+# group: [quack]
+
+# Before we load the extension, this will fail
+statement error
+SELECT quacking_quack('running');
+----
+Catalog Error: Scalar Function with name quacking_quack does not exist!
+
+# Require statement will ensure the extension is loaded from now on
+require quacking_quack
+
+require icu
+
+# Confirm the extension works
+query I
+SELECT quacking_quack('running');
+----
+run
