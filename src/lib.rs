@@ -3,9 +3,7 @@ extern crate duckdb_loadable_macros;
 extern crate libduckdb_sys;
 
 use duckdb::{
-    core::{DataChunkHandle, Inserter, LogicalTypeHandle, LogicalTypeId},
-    vtab::{BindInfo, InitInfo, TableFunctionInfo, VTab},
-    Connection, Result,
+    arrow::row, core::{DataChunkHandle, Inserter, LogicalTypeHandle, LogicalTypeId}, vtab::{BindInfo, InitInfo, TableFunctionInfo, VTab}, Connection, Result
 };
 use duckdb_loadable_macros::duckdb_entrypoint_c_api;
 use libduckdb_sys as ffi;
@@ -17,8 +15,7 @@ use std::{
 
 #[repr(C)]
 struct HelloBindData {
-    name: String,
-    repeat_count: usize
+    regressive_count: usize
 }
 
 #[repr(C)]
@@ -33,10 +30,9 @@ impl VTab for HelloVTab {
     type BindData = HelloBindData;
 
     fn bind(bind: &BindInfo) -> Result<Self::BindData, Box<dyn std::error::Error>> {
-        bind.add_result_column("column0", LogicalTypeHandle::from(LogicalTypeId::Varchar));
-        let name = bind.get_parameter(0).to_string();
-        let repeat_count = bind.get_parameter(1).to_int64() as usize;
-        Ok(HelloBindData { name, repeat_count })
+        bind.add_result_column("mr-cuack", LogicalTypeHandle::from(LogicalTypeId::Varchar));
+        let regressive_count = bind.get_parameter(0).to_int64() as usize;
+        Ok(HelloBindData { regressive_count })
     }
 
     fn init(_: &InitInfo) -> Result<Self::InitData, Box<dyn std::error::Error>> {
@@ -50,16 +46,21 @@ impl VTab for HelloVTab {
         let bind_data = func.get_bind_data();
 
         let current_row = init_data.done.load(Ordering::Relaxed);
-        let repeat_count = bind_data.repeat_count;
+        let regressive_count = bind_data.regressive_count;
 
-        if current_row >= repeat_count {
+        if current_row >= regressive_count {
             output.set_len(0);
         } else {
-            let rows_to_produce = std::cmp::min(1024,repeat_count - current_row);
+            let rows_to_produce = std::cmp::min(1024,regressive_count - current_row);
             let vector = output.flat_vector(0);
 
             for i in 0..rows_to_produce {
-                let row_value = CString::new(format!("Rusty Quack {} 🐥", bind_data.name))?;
+                let row_value = match i {
+                    too_early if too_early < rows_to_produce - 2 => CString::new(format!("Not yet ... 🥚"))?,
+                    almost if almost == rows_to_produce - 2 => CString::new(format!("Almost ... 🥚✨"))?,
+                    _ => CString::new(format!("Quack Quack 🐥"))?,
+                };
+
                 vector.insert(i, row_value);
             }
             init_data
@@ -72,7 +73,6 @@ impl VTab for HelloVTab {
 
     fn parameters() -> Option<Vec<LogicalTypeHandle>> {
         Some(vec![
-            LogicalTypeHandle::from(LogicalTypeId::Varchar),
             LogicalTypeHandle::from(LogicalTypeId::Integer),
         ])
     }
