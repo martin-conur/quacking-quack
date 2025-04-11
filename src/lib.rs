@@ -17,9 +17,28 @@ use libduckdb_sys::{
 };
 use duckdb::core::Inserter;
 use duckdb::ffi;
-
+use std::{borrow::Cow, slice};
 use rust_stemmers::{Algorithm, Stemmer};
 struct StemFunc;
+
+fn duckdb_string_to_owned_string(word: &duckdb_string_t) -> String {
+    unsafe {
+        let len = duckdb_string_t_length(*word);
+        let c_ptr = duckdb_string_t_data(word as *const _ as *mut _);
+        let bytes = slice::from_raw_parts(c_ptr as *const u8, len as usize);
+        String::from_utf8_lossy(bytes).into_owned()
+    }
+}
+
+fn process_strings(input_slice: &[duckdb_string_t], stemmer: &Stemmer) -> Vec<String> {
+    input_slice
+        .iter()
+        .map(|word| {
+            let string = duckdb_string_to_owned_string(word);
+            stem_word(&string, stemmer)
+        })
+        .collect()
+}
 
 impl VScalar for StemFunc {
     type State = ();
@@ -41,21 +60,10 @@ impl VScalar for StemFunc {
 
         // stem all the words in the input slice
         // map the input slice to a vector of stemmed words
-        let stemmed_words: Vec<String> = input_slice
-            .iter()
-            .map(|word| {
-                let len = duckdb_string_t_length(*word);
-                let c_ptr = duckdb_string_t_data(word as *const _ as *mut _);
-                let string = String::from_utf8_lossy(std::slice::from_raw_parts(
-                    c_ptr as *const u8,
-                    len as usize,
-                ));
-                stem_word(string.as_ref(), &stemmer)
-            })
-            .collect::<Vec<String>>();
+        let stemmed_words = process_strings(input_slice, &stemmer);
 
         for (i, stemmed_word) in stemmed_words.iter().enumerate() {
-            output_flat.insert(i, stemmed_word.as_str())
+            output_flat.insert(i, stemmed_word.as_str());
         }
 
         Ok(())
